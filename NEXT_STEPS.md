@@ -83,7 +83,7 @@ Suggested area:
 
 ### 5) Add simple UX styling/settings options
 
-Status: ⏳ Pending
+Status: ✅ Completed (bottom-left settings menu added with background preset + compact mode, persisted locally)
 
 Request:
 - Provide simple UX options such as background color and a few basic preferences.
@@ -247,6 +247,24 @@ Scope note:
 Suggested area:
 - `src/app/page.tsx` (`loadFeeds`, `loadEntries`, selected feed + count resolution)
 - `src/app/api/feedly/articles/route.ts` (verify count handling and constraints)
+
+---
+
+### 14) Make settings background options more visually distinct and accessible
+
+Status: ✅ Completed (replaced with Sky, Emerald, and Stone presets; Stone retained)
+
+Request:
+- Current styling/background options look too similar.
+- Keep `Stone`, replace the other two with more visually distinct options while maintaining accessible contrast.
+
+Goal:
+- Offer 3 total presets in settings, including `Stone`.
+- Ensure the other two options are clearly distinct from each other and from `Stone`.
+- Keep body/content readability high (web-accessible color contrast with existing text/UI).
+
+Suggested area:
+- `src/app/page.tsx` (`BackgroundPreset` type, `BACKGROUND_PRESET_CLASSES`, settings `<select>` options)
 
 ## Nice-to-Have Validation Pass
 

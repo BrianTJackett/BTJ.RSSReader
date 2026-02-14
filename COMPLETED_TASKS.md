@@ -31,6 +31,8 @@ This file summarizes completed work for the BTJ RSS Reader project to date.
 - [x] Added synthetic "All" section at top of feed nav to read unread entries across all feeds in date order. (Completed: 2026-02-14)
 - [x] Placed selected article webview inline directly beneath the clicked article row. (Completed: 2026-02-14)
 - [x] Added per-feed article count selector (10/25/50/100) with local persistence. (Completed: 2026-02-14)
+- [x] Added bottom-left settings menu with persisted background preset and compact mode options. (Completed: 2026-02-14)
+- [x] Updated background presets to more distinct accessible options (`Sky`, `Emerald`, `Stone`) while retaining `Stone`. (Completed: 2026-02-14)
 - [x] Added article age display in days. (Completed: 2026-02-13)
 - [x] Added grouped/category feed display inferred from Feedly metadata. (Completed: 2026-02-13)
 
@@ -92,4 +94,4 @@ This file summarizes completed work for the BTJ RSS Reader project to date.
 
 ---
 
-Last updated: 2026-02-14 (tracking docs synced after task #6 completion)
+Last updated: 2026-02-14 (tracking docs synced after task #14 completion)
