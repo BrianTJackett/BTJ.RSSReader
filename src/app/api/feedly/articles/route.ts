@@ -9,7 +9,7 @@ type FeedlyStreamItem = {
   content?: { content?: string };
   alternate?: Array<{ href?: string }>;
   canonical?: Array<{ href?: string }>;
-  origin?: { title?: string };
+  origin?: { title?: string; streamId?: string };
   published?: number;
   updated?: number;
   crawled?: number;
@@ -28,7 +28,8 @@ function stripHtml(value: string) {
 }
 
 export async function GET(request: NextRequest) {
-  const count = Number(request.nextUrl.searchParams.get("count") ?? "40");
+  const requestedCount = Number(request.nextUrl.searchParams.get("count") ?? "10");
+  const count = [10, 25, 50, 100].includes(requestedCount) ? requestedCount : 10;
   const requestedStreamId = request.nextUrl.searchParams.get("streamId");
 
   try {
@@ -55,6 +56,7 @@ export async function GET(request: NextRequest) {
 
       return {
         id: item.id,
+        feedId: item.origin?.streamId ?? "",
         title: item.title ?? "(Untitled)",
         summary: stripHtml(item.summary?.content ?? item.content?.content ?? "No preview available."),
         source: item.origin?.title ?? "Unknown source",

@@ -1,5 +1,6 @@
 export type FeedlyEntry = {
   id: string;
+  feedId: string;
   title: string;
   summary: string;
   source: string;
