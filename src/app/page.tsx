@@ -20,6 +20,11 @@ type EmbedCheckResponse = {
 };
 
 type EmbedStatus = "idle" | "checking" | "embeddable" | "blocked";
+type ArticleCountOption = 10 | 25 | 50 | 100;
+
+const ARTICLE_COUNT_OPTIONS: ArticleCountOption[] = [10, 25, 50, 100];
+const ARTICLE_COUNT_STORAGE_KEY = "btj-rssreader-article-count-by-feed";
+const ALL_FEEDS_ID = "__all__";
 
 function formatAgeDays(epochMs: number) {
   const normalizedEpochMs = epochMs < 1_000_000_000_000 ? epochMs * 1000 : epochMs;
@@ -42,7 +47,9 @@ function formatAgeDays(epochMs: number) {
 
 export default function HomePage() {
   const [feeds, setFeeds] = useState<FeedlyFeed[]>([]);
+  const [articleCountByFeed, setArticleCountByFeed] = useState<Record<string, ArticleCountOption>>({});
   const [selectedFeedId, setSelectedFeedId] = useState<string | null>(null);
+  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [entries, setEntries] = useState<FeedlyEntry[]>([]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
@@ -61,9 +68,29 @@ export default function HomePage() {
     [feeds, selectedFeedId]
   );
 
+  const isAllFeedsSelected = selectedFeedId === ALL_FEEDS_ID;
+  const allFeedsUnreadCount = useMemo(() => feeds.reduce((total, feed) => total + feed.unreadCount, 0), [feeds]);
+  const selectedFeedTitle = isAllFeedsSelected ? "All" : selectedFeed?.title ?? null;
+
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedEntryId) ?? null,
     [entries, selectedEntryId]
+  );
+
+  const getArticleCountForFeed = useCallback(
+    (feedId: string | null): ArticleCountOption => {
+      if (!feedId) {
+        return 10;
+      }
+
+      return articleCountByFeed[feedId] ?? 10;
+    },
+    [articleCountByFeed]
+  );
+
+  const selectedFeedArticleCount = useMemo(
+    () => getArticleCountForFeed(selectedFeedId),
+    [getArticleCountForFeed, selectedFeedId]
   );
 
   const pendingReadIds = useMemo(
@@ -87,6 +114,7 @@ export default function HomePage() {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([groupName, groupFeeds]) => ({
         groupName,
+        unreadCount: groupFeeds.reduce((total, feed) => total + feed.unreadCount, 0),
         feeds: groupFeeds.sort((left, right) => {
           const leftIsUnread = left.unreadCount > 0;
           const rightIsUnread = right.unreadCount > 0;
@@ -107,11 +135,18 @@ export default function HomePage() {
         ? "Feedly login failed. Please try again."
         : null;
 
-  const loadEntries = useCallback(async (streamId: string) => {
+  const loadEntries = useCallback(async (streamId: string, count: ArticleCountOption = 10) => {
     setIsLoadingEntries(true);
     setError(null);
 
-    const response = await fetch(`/api/feedly/articles?streamId=${encodeURIComponent(streamId)}`, { cache: "no-store" });
+    const effectiveStreamId = streamId === ALL_FEEDS_ID ? null : streamId;
+    const query = new URLSearchParams();
+    query.set("count", String(count));
+    if (effectiveStreamId) {
+      query.set("streamId", effectiveStreamId);
+    }
+
+    const response = await fetch(`/api/feedly/articles?${query.toString()}`, { cache: "no-store" });
 
     if (response.status === 401) {
       setIsAuthenticated(false);
@@ -132,13 +167,14 @@ export default function HomePage() {
 
     setIsAuthenticated(true);
     const loadedEntries = payload.entries ?? [];
-    setEntries(loadedEntries);
+    const sortedEntries = [...loadedEntries].sort((left, right) => right.ageTimestamp - left.ageTimestamp);
+    setEntries(sortedEntries);
     setSelectedEntryId((currentSelectedId) => {
-      if (loadedEntries.some((entry) => entry.id === currentSelectedId)) {
+      if (sortedEntries.some((entry) => entry.id === currentSelectedId)) {
         return currentSelectedId;
       }
 
-      return loadedEntries[0]?.id ?? null;
+      return sortedEntries[0]?.id ?? null;
     });
     setIsLoadingEntries(false);
   }, []);
@@ -173,21 +209,22 @@ export default function HomePage() {
     setIsAuthenticated(true);
 
     const nextFeedId =
+      (selectedFeedId === ALL_FEEDS_ID ? ALL_FEEDS_ID : null) ??
       loadedFeeds.find((feed) => feed.id === selectedFeedId)?.id ??
       loadedFeeds.find((feed) => feed.unreadCount > 0)?.id ??
-      loadedFeeds[0]?.id ??
+      ALL_FEEDS_ID ??
       null;
     setSelectedFeedId(nextFeedId);
 
     if (nextFeedId) {
-      await loadEntries(nextFeedId);
+      await loadEntries(nextFeedId, getArticleCountForFeed(nextFeedId));
     } else {
       setEntries([]);
       setSelectedEntryId(null);
     }
 
     setIsLoadingFeeds(false);
-  }, [loadEntries, selectedFeedId]);
+  }, [getArticleCountForFeed, loadEntries, selectedFeedId]);
 
   async function markAsRead(entryIds: string[]) {
     if (entryIds.length === 0) {
@@ -213,9 +250,9 @@ export default function HomePage() {
     }
 
     const currentSelectedEntryId = selectedEntry.id;
-    const currentSelectedFeedId = selectedFeedId;
+    const currentSelectedFeedId = selectedEntry.feedId || selectedFeedId;
 
-    if (!currentSelectedFeedId) {
+    if (!currentSelectedFeedId || currentSelectedFeedId === ALL_FEEDS_ID) {
       return;
     }
 
@@ -283,11 +320,37 @@ export default function HomePage() {
 
   async function handleSelectFeed(feedId: string) {
     setSelectedFeedId(feedId);
-    await loadEntries(feedId);
+    await loadEntries(feedId, getArticleCountForFeed(feedId));
+  }
+
+  async function handleArticleCountChange(value: string) {
+    if (!selectedFeedId) {
+      return;
+    }
+
+    const parsed = Number(value);
+    if (!ARTICLE_COUNT_OPTIONS.includes(parsed as ArticleCountOption)) {
+      return;
+    }
+
+    const count = parsed as ArticleCountOption;
+    setArticleCountByFeed((current) => ({
+      ...current,
+      [selectedFeedId]: count,
+    }));
+
+    await loadEntries(selectedFeedId, count);
   }
 
   function toggleGroup(groupName: string) {
     setExpandedGroups((current) => ({
+      ...current,
+      [groupName]: !current[groupName],
+    }));
+  }
+
+  function toggleCategoryCollapse(groupName: string) {
+    setCollapsedCategories((current) => ({
       ...current,
       [groupName]: !current[groupName],
     }));
@@ -325,6 +388,30 @@ export default function HomePage() {
     setOauthError(params.get("error"));
     void loadFeeds();
   }, [loadFeeds]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(ARTICLE_COUNT_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as Record<string, number>;
+      const normalized = Object.fromEntries(
+        Object.entries(parsed)
+          .filter(([, value]) => ARTICLE_COUNT_OPTIONS.includes(value as ArticleCountOption))
+          .map(([key, value]) => [key, value as ArticleCountOption])
+      ) as Record<string, ArticleCountOption>;
+
+      setArticleCountByFeed(normalized);
+    } catch {
+      setArticleCountByFeed({});
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(ARTICLE_COUNT_STORAGE_KEY, JSON.stringify(articleCountByFeed));
+  }, [articleCountByFeed]);
 
   useEffect(() => {
     if (!selectedEntry?.url) {
@@ -386,61 +473,89 @@ export default function HomePage() {
               <p className="p-4 text-sm text-slate-500">No subscriptions found.</p>
             ) : (
               <div className="pb-2">
+                <section className="border-b border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => void handleSelectFeed(ALL_FEEDS_ID)}
+                    className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${
+                      isAllFeedsSelected ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-700"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="line-clamp-2">All</p>
+                      <span className="shrink-0 text-[11px] text-slate-500">{allFeedsUnreadCount}</span>
+                    </div>
+                  </button>
+                </section>
                 {groupedFeeds.map((group) => (
                   <section key={group.groupName} className="border-b border-slate-100 last:border-b-0">
-                    <h3 className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                      {group.groupName}
-                    </h3>
-                    <ul>
-                      {(expandedGroups[group.groupName]
-                        ? group.feeds
-                        : group.feeds.filter((feed) => feed.unreadCount > 0 || feed.id === selectedFeedId)
-                      ).map((feed) => (
-                        <li key={feed.id}>
-                          <button
-                            type="button"
-                            onClick={() => void handleSelectFeed(feed.id)}
-                            className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${
-                              selectedFeedId === feed.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-700"
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <p className="line-clamp-2">{feed.title}</p>
-                              <span className="shrink-0 text-[11px] text-slate-500">{feed.unreadCount}</span>
-                            </div>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                    {!expandedGroups[group.groupName] ? (
-                      (() => {
-                        const hiddenCount = group.feeds.filter(
-                          (feed) => feed.unreadCount === 0 && feed.id !== selectedFeedId
-                        ).length;
+                    <div className="flex items-center justify-between px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleCategoryCollapse(group.groupName)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      >
+                        <span className="shrink-0 text-[11px] text-slate-500">{collapsedCategories[group.groupName] ? "▸" : "▾"}</span>
+                        <h3 className="truncate text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          {group.groupName}
+                        </h3>
+                      </button>
+                      <span className="shrink-0 text-[11px] text-slate-500">{group.unreadCount}</span>
+                    </div>
+                    {!collapsedCategories[group.groupName] ? (
+                      <>
+                        <ul>
+                          {(expandedGroups[group.groupName]
+                            ? group.feeds
+                            : group.feeds.filter((feed) => feed.unreadCount > 0 || feed.id === selectedFeedId)
+                          ).map((feed) => (
+                            <li key={feed.id}>
+                              <button
+                                type="button"
+                                onClick={() => void handleSelectFeed(feed.id)}
+                                className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${
+                                  selectedFeedId === feed.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-700"
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <p className="line-clamp-2">{feed.title}</p>
+                                  <span className="shrink-0 text-[11px] text-slate-500">{feed.unreadCount}</span>
+                                </div>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                        {!expandedGroups[group.groupName] ? (
+                          (() => {
+                            const hiddenCount = group.feeds.filter(
+                              (feed) => feed.unreadCount === 0 && feed.id !== selectedFeedId
+                            ).length;
 
-                        if (hiddenCount <= 0) {
-                          return null;
-                        }
+                            if (hiddenCount <= 0) {
+                              return null;
+                            }
 
-                        return (
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => toggleGroup(group.groupName)}
+                                className="w-full px-3 py-2 text-left text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                              >
+                                {hiddenCount} more feeds
+                              </button>
+                            );
+                          })()
+                        ) : (
                           <button
                             type="button"
                             onClick={() => toggleGroup(group.groupName)}
                             className="w-full px-3 py-2 text-left text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                           >
-                            {hiddenCount} more feeds
+                            Show fewer feeds
                           </button>
-                        );
-                      })()
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => toggleGroup(group.groupName)}
-                        className="w-full px-3 py-2 text-left text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                      >
-                        Show fewer feeds
-                      </button>
-                    )}
+                        )}
+                      </>
+                    ) : null}
                   </section>
                 ))}
               </div>
@@ -450,18 +565,50 @@ export default function HomePage() {
           <article className="rounded-lg border border-slate-200 bg-white p-4 md:p-6">
             {error ? (
               <p className="text-sm text-red-600">{error}</p>
-            ) : !selectedFeed ? (
+            ) : !selectedFeedId ? (
               <p className="text-sm text-slate-500">Select a feed from the left navigation.</p>
             ) : isLoadingEntries ? (
               <p className="text-sm text-slate-500">Loading unread articles...</p>
             ) : entries.length === 0 ? (
               <>
-                <h2 className="text-lg font-semibold text-slate-900">{selectedFeed.title}</h2>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-lg font-semibold text-slate-900">{selectedFeedTitle}</h2>
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Articles
+                    <select
+                      value={selectedFeedArticleCount}
+                      onChange={(event) => void handleArticleCountChange(event.target.value)}
+                      className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                    >
+                      {ARTICLE_COUNT_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <p className="mt-3 text-sm text-slate-500">No unread articles in this feed.</p>
               </>
             ) : (
               <>
-                <h2 className="text-lg font-semibold text-slate-900">{selectedFeed.title}</h2>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-lg font-semibold text-slate-900">{selectedFeedTitle}</h2>
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Articles
+                    <select
+                      value={selectedFeedArticleCount}
+                      onChange={(event) => void handleArticleCountChange(event.target.value)}
+                      className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                    >
+                      {ARTICLE_COUNT_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <ul className="mt-4 divide-y divide-slate-100 rounded-md border border-slate-200">
                   {entries.map((entry) => (
                     <li key={entry.id}>
@@ -487,69 +634,67 @@ export default function HomePage() {
                           {formatAgeDays(entry.ageTimestamp)}
                         </span>
                       </button>
+
+                      {selectedEntryId === entry.id ? (
+                        <section className="border-t border-slate-200 bg-white">
+                          <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3">
+                            <div>
+                              <h3 className="text-sm font-semibold text-slate-900">{entry.title}</h3>
+                              <p className="mt-1 text-xs text-slate-500">{entry.source}</p>
+                            </div>
+                            <label className="flex shrink-0 items-center gap-2 text-xs text-slate-700">
+                              <input
+                                key={entry.id}
+                                type="checkbox"
+                                className="h-4 w-4"
+                                disabled={isSyncingReads}
+                                checked={pendingReadIds.has(entry.id)}
+                                onChange={(event) => void handleMarkSelectedAsRead(event.target.checked)}
+                              />
+                              Mark as read
+                            </label>
+                          </div>
+
+                          {entry.url ? (
+                            embedStatus === "embeddable" ? (
+                              <iframe
+                                title={entry.title}
+                                src={entry.url}
+                                className="h-[62vh] w-full"
+                              />
+                            ) : embedStatus === "checking" ? (
+                              <div className="flex h-[62vh] items-center justify-center px-4 py-3 text-sm text-slate-500">
+                                Checking if this article can be displayed in webview...
+                              </div>
+                            ) : (
+                              <div className="max-h-[62vh] overflow-auto px-4 py-3">
+                                <p className="text-sm text-slate-700">
+                                  {embedBlockReason ?? "This site cannot be embedded in a webview."}
+                                </p>
+                                <a
+                                  href={entry.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-3 inline-block rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                                >
+                                  Open Original Article
+                                </a>
+                                <div className="mt-4 border-t border-slate-200 pt-3">
+                                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Summary</p>
+                                  <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{entry.summary}</p>
+                                </div>
+                              </div>
+                            )
+                          ) : (
+                            <div className="max-h-[62vh] overflow-auto px-4 py-3">
+                              <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{entry.summary}</p>
+                            </div>
+                          )}
+                        </section>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
-
-                {selectedEntry ? (
-                  <section className="mt-5 rounded-md border border-slate-200">
-                    <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-slate-900">{selectedEntry.title}</h3>
-                        <p className="mt-1 text-xs text-slate-500">{selectedEntry.source}</p>
-                      </div>
-                      <label className="flex shrink-0 items-center gap-2 text-xs text-slate-700">
-                        <input
-                          key={selectedEntry.id}
-                          type="checkbox"
-                          className="h-4 w-4"
-                          disabled={isSyncingReads}
-                          checked={pendingReadIds.has(selectedEntry.id)}
-                          onChange={(event) => void handleMarkSelectedAsRead(event.target.checked)}
-                        />
-                        Mark as read
-                      </label>
-                    </div>
-
-                    {selectedEntry.url ? (
-                      embedStatus === "embeddable" ? (
-                        <iframe
-                          title={selectedEntry.title}
-                          src={selectedEntry.url}
-                          className="h-[62vh] w-full"
-                        />
-                      ) : embedStatus === "checking" ? (
-                        <div className="flex h-[62vh] items-center justify-center px-4 py-3 text-sm text-slate-500">
-                          Checking if this article can be displayed in webview...
-                        </div>
-                      ) : (
-                        <div className="max-h-[62vh] overflow-auto px-4 py-3">
-                          <p className="text-sm text-slate-700">
-                            {embedBlockReason ?? "This site cannot be embedded in a webview."}
-                          </p>
-                          <a
-                            href={selectedEntry.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-3 inline-block rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
-                          >
-                            Open Original Article
-                          </a>
-                          <div className="mt-4 border-t border-slate-200 pt-3">
-                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Summary</p>
-                            <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{selectedEntry.summary}</p>
-                          </div>
-                        </div>
-                      )
-                    ) : (
-                      <div className="max-h-[62vh] overflow-auto px-4 py-3">
-                        <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{selectedEntry.summary}</p>
-                      </div>
-                    )}
-                  </section>
-                ) : (
-                  <p className="mt-4 text-sm text-slate-500">Select an article title above to open it.</p>
-                )}
               </>
             )}
           </article>
