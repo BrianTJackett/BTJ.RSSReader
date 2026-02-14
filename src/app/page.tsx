@@ -13,6 +13,14 @@ type FeedsApiResponse = {
   error?: string;
 };
 
+type EmbedCheckResponse = {
+  embeddable?: boolean;
+  reason?: string;
+  error?: string;
+};
+
+type EmbedStatus = "idle" | "checking" | "embeddable" | "blocked";
+
 function formatAgeDays(epochMs: number) {
   const normalizedEpochMs = epochMs < 1_000_000_000_000 ? epochMs * 1000 : epochMs;
 
@@ -38,7 +46,10 @@ export default function HomePage() {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [entries, setEntries] = useState<FeedlyEntry[]>([]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
-  const [isMarkingRead, setIsMarkingRead] = useState(false);
+  const [pendingReadQueue, setPendingReadQueue] = useState<Array<{ entryId: string; feedId: string }>>([]);
+  const [isSyncingReads, setIsSyncingReads] = useState(false);
+  const [embedStatus, setEmbedStatus] = useState<EmbedStatus>("idle");
+  const [embedBlockReason, setEmbedBlockReason] = useState<string | null>(null);
   const [isLoadingFeeds, setIsLoadingFeeds] = useState(true);
   const [isLoadingEntries, setIsLoadingEntries] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +64,11 @@ export default function HomePage() {
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedEntryId) ?? null,
     [entries, selectedEntryId]
+  );
+
+  const pendingReadIds = useMemo(
+    () => new Set(pendingReadQueue.map((item) => item.entryId)),
+    [pendingReadQueue]
   );
 
   const groupedFeeds = useMemo(() => {
@@ -71,7 +87,16 @@ export default function HomePage() {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([groupName, groupFeeds]) => ({
         groupName,
-        feeds: groupFeeds.sort((left, right) => left.title.localeCompare(right.title)),
+        feeds: groupFeeds.sort((left, right) => {
+          const leftIsUnread = left.unreadCount > 0;
+          const rightIsUnread = right.unreadCount > 0;
+
+          if (leftIsUnread !== rightIsUnread) {
+            return leftIsUnread ? -1 : 1;
+          }
+
+          return left.title.localeCompare(right.title);
+        }),
       }));
   }, [feeds]);
 
@@ -164,13 +189,17 @@ export default function HomePage() {
     setIsLoadingFeeds(false);
   }, [loadEntries, selectedFeedId]);
 
-  async function markAsRead(entryId: string) {
+  async function markAsRead(entryIds: string[]) {
+    if (entryIds.length === 0) {
+      return;
+    }
+
     await fetch("/api/feedly/mark-read", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ entryId }),
+      body: JSON.stringify({ entryIds }),
     });
   }
 
@@ -178,38 +207,77 @@ export default function HomePage() {
     setSelectedEntryId(entry.id);
   }
 
-  async function handleMarkSelectedAsRead(checked: boolean) {
-    if (!checked || !selectedEntry) {
+  function handleMarkSelectedAsRead(checked: boolean) {
+    if (!selectedEntry) {
       return;
     }
 
-    setIsMarkingRead(true);
-    try {
-      await markAsRead(selectedEntry.id);
+    const currentSelectedEntryId = selectedEntry.id;
+    const currentSelectedFeedId = selectedFeedId;
 
-      const currentSelectedId = selectedEntry.id;
+    if (!currentSelectedFeedId) {
+      return;
+    }
+
+    setPendingReadQueue((currentQueue) => {
+      if (!checked) {
+        return currentQueue.filter((item) => item.entryId !== currentSelectedEntryId);
+      }
+
+      if (currentQueue.some((item) => item.entryId === currentSelectedEntryId)) {
+        return currentQueue;
+      }
+
+      return [...currentQueue, { entryId: currentSelectedEntryId, feedId: currentSelectedFeedId }];
+    });
+  }
+
+  async function handleSyncReads() {
+    if (pendingReadQueue.length === 0 || isSyncingReads) {
+      return;
+    }
+
+    const queueSnapshot = pendingReadQueue;
+    const readIds = new Set(queueSnapshot.map((item) => item.entryId));
+    const readCountByFeed = queueSnapshot.reduce<Record<string, number>>((acc, item) => {
+      acc[item.feedId] = (acc[item.feedId] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    setIsSyncingReads(true);
+    setError(null);
+
+    try {
+      const entryIds = queueSnapshot.map((item) => item.entryId);
+      await markAsRead(entryIds);
+
       setEntries((current) => {
-        const currentIndex = current.findIndex((candidate) => candidate.id === currentSelectedId);
-        const remaining = current.filter((candidate) => candidate.id !== currentSelectedId);
-        const nextEntry = remaining[currentIndex] ?? remaining[currentIndex - 1] ?? null;
-        setSelectedEntryId(nextEntry?.id ?? null);
+        const remaining = current.filter((entry) => !readIds.has(entry.id));
+        if (selectedEntryId && readIds.has(selectedEntryId)) {
+          setSelectedEntryId(remaining[0]?.id ?? null);
+        }
         return remaining;
       });
 
       setFeeds((currentFeeds) =>
-        currentFeeds.map((feed) =>
-          feed.id === selectedFeedId
-            ? {
-                ...feed,
-                unreadCount: Math.max(0, feed.unreadCount - 1),
-              }
-            : feed
-        )
+        currentFeeds.map((feed) => {
+          const toSubtract = readCountByFeed[feed.id] ?? 0;
+          if (toSubtract === 0) {
+            return feed;
+          }
+
+          return {
+            ...feed,
+            unreadCount: Math.max(0, feed.unreadCount - toSubtract),
+          };
+        })
       );
+
+      setPendingReadQueue([]);
     } catch {
-      setError("Unable to mark article as read.");
+      setError("Unable to sync read articles.");
     } finally {
-      setIsMarkingRead(false);
+      setIsSyncingReads(false);
     }
   }
 
@@ -225,26 +293,73 @@ export default function HomePage() {
     }));
   }
 
+  const checkEmbeddable = useCallback(async (url: string) => {
+    setEmbedStatus("checking");
+    setEmbedBlockReason(null);
+
+    try {
+      const response = await fetch(`/api/feedly/embed-check?url=${encodeURIComponent(url)}`, { cache: "no-store" });
+      const payload = (await response.json()) as EmbedCheckResponse;
+
+      if (!response.ok) {
+        setEmbedStatus("blocked");
+        setEmbedBlockReason(payload.error ?? "Unable to verify embed permissions for this site.");
+        return;
+      }
+
+      if (payload.embeddable) {
+        setEmbedStatus("embeddable");
+        return;
+      }
+
+      setEmbedStatus("blocked");
+      setEmbedBlockReason(payload.reason ?? "This site blocks webview embedding.");
+    } catch {
+      setEmbedStatus("blocked");
+      setEmbedBlockReason("Unable to verify embed permissions for this site.");
+    }
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     setOauthError(params.get("error"));
     void loadFeeds();
   }, [loadFeeds]);
 
+  useEffect(() => {
+    if (!selectedEntry?.url) {
+      setEmbedStatus("idle");
+      setEmbedBlockReason(null);
+      return;
+    }
+
+    void checkEmbeddable(selectedEntry.url);
+  }, [checkEmbeddable, selectedEntry]);
+
   return (
     <main className="mx-auto max-w-[1400px] px-6 py-8">
       <header className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">BTJ RSS Reader</h1>
-          <p className="text-sm text-slate-600">Select a feed, open an article, then manually mark it as read.</p>
+          <p className="text-sm text-slate-600">Select a feed, open an article, mark as read locally, then sync.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadFeeds()}
-          className="rounded-md bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-700"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void loadFeeds()}
+            className="rounded-md bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-700"
+          >
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSyncReads()}
+            disabled={isSyncingReads || pendingReadQueue.length === 0}
+            className="rounded-md bg-emerald-600 px-3 py-2 text-sm text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isSyncingReads ? "Syncing..." : `Sync${pendingReadQueue.length > 0 ? ` (${pendingReadQueue.length})` : ""}`}
+          </button>
+        </div>
       </header>
 
       {!isAuthenticated ? (
@@ -357,8 +472,20 @@ export default function HomePage() {
                           selectedEntryId === entry.id ? "bg-slate-100" : ""
                         }`}
                       >
-                        <span className="text-sm font-medium text-slate-900">{entry.title}</span>
-                        <span className="shrink-0 text-xs text-slate-500">{formatAgeDays(entry.ageTimestamp)}</span>
+                        <span
+                          className={`text-sm font-medium ${
+                            pendingReadIds.has(entry.id) ? "text-slate-400 line-through" : "text-slate-900"
+                          }`}
+                        >
+                          {entry.title}
+                        </span>
+                        <span
+                          className={`shrink-0 text-xs ${
+                            pendingReadIds.has(entry.id) ? "text-slate-400" : "text-slate-500"
+                          }`}
+                        >
+                          {formatAgeDays(entry.ageTimestamp)}
+                        </span>
                       </button>
                     </li>
                   ))}
@@ -373,9 +500,11 @@ export default function HomePage() {
                       </div>
                       <label className="flex shrink-0 items-center gap-2 text-xs text-slate-700">
                         <input
+                          key={selectedEntry.id}
                           type="checkbox"
                           className="h-4 w-4"
-                          disabled={isMarkingRead}
+                          disabled={isSyncingReads}
+                          checked={pendingReadIds.has(selectedEntry.id)}
                           onChange={(event) => void handleMarkSelectedAsRead(event.target.checked)}
                         />
                         Mark as read
@@ -383,11 +512,35 @@ export default function HomePage() {
                     </div>
 
                     {selectedEntry.url ? (
-                      <iframe
-                        title={selectedEntry.title}
-                        src={selectedEntry.url}
-                        className="h-[62vh] w-full"
-                      />
+                      embedStatus === "embeddable" ? (
+                        <iframe
+                          title={selectedEntry.title}
+                          src={selectedEntry.url}
+                          className="h-[62vh] w-full"
+                        />
+                      ) : embedStatus === "checking" ? (
+                        <div className="flex h-[62vh] items-center justify-center px-4 py-3 text-sm text-slate-500">
+                          Checking if this article can be displayed in webview...
+                        </div>
+                      ) : (
+                        <div className="max-h-[62vh] overflow-auto px-4 py-3">
+                          <p className="text-sm text-slate-700">
+                            {embedBlockReason ?? "This site cannot be embedded in a webview."}
+                          </p>
+                          <a
+                            href={selectedEntry.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-3 inline-block rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                          >
+                            Open Original Article
+                          </a>
+                          <div className="mt-4 border-t border-slate-200 pt-3">
+                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Summary</p>
+                            <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{selectedEntry.summary}</p>
+                          </div>
+                        </div>
+                      )
                     ) : (
                       <div className="max-h-[62vh] overflow-auto px-4 py-3">
                         <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{selectedEntry.summary}</p>

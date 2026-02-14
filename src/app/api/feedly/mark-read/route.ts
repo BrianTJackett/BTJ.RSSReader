@@ -3,13 +3,15 @@ import { feedlyRequest } from "@/lib/feedly";
 
 type MarkReadBody = {
   entryId?: string;
+  entryIds?: string[];
 };
 
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as MarkReadBody;
+  const entryIds = Array.from(new Set([...(body.entryIds ?? []), ...(body.entryId ? [body.entryId] : [])]));
 
-  if (!body.entryId) {
-    return NextResponse.json({ error: "entryId is required" }, { status: 400 });
+  if (entryIds.length === 0) {
+    return NextResponse.json({ error: "entryId or entryIds is required" }, { status: 400 });
   }
 
   try {
@@ -18,7 +20,7 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         action: "markAsRead",
         type: "entries",
-        entryIds: [body.entryId],
+        entryIds,
       }),
     });
 
