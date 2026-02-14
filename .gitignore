@@ -6,3 +6,4 @@ out
 .env.*.local
 coverage
 *.log
+.vscode/settings.json
