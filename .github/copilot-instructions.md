@@ -23,9 +23,10 @@
 ## Task Tracking Rules
 
 - For every completed item implemented from `NEXT_STEPS.md`, immediately update tracking docs in the same session:
-	1. Mark the item as completed in `NEXT_STEPS.md`.
-	2. Add/update the corresponding completion entry in `COMPLETED_TASKS.md`.
-	3. Run validation (`npm run lint` and `npm run build`) and report status.
+	1. Run validation (`npm run lint` and `npm run build`) and report status.
+	2. Mark the item as completed in `NEXT_STEPS.md`.
+	3. Add/update the corresponding completion entry in `COMPLETED_TASKS.md`.
+- Only mark items as completed in tracking docs after validation succeeds.
 - When user asks to "continue," select the next pending item from `NEXT_STEPS.md` unless the user specifies a different item.
 - For every newly added completed entry in `COMPLETED_TASKS.md`, include a completion date (chronological ordering is not required).
 - Treat this tracking workflow as required project process for all future tasks.

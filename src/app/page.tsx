@@ -278,17 +278,41 @@ export default function HomePage() {
       return;
     }
 
-    setPendingReadQueue((currentQueue) => {
-      if (!checked) {
-        return currentQueue.filter((item) => item.entryId !== currentSelectedEntryId);
+    if (!checked) {
+      setPendingReadQueue((currentQueue) => currentQueue.filter((item) => item.entryId !== currentSelectedEntryId));
+      return;
+    }
+
+    if (pendingReadIds.has(currentSelectedEntryId)) {
+      return;
+    }
+
+    setPendingReadQueue((currentQueue) => [...currentQueue, { entryId: currentSelectedEntryId, feedId: currentSelectedFeedId }]);
+
+    setEntries((currentEntries) => {
+      const removedIndex = currentEntries.findIndex((entry) => entry.id === currentSelectedEntryId);
+      if (removedIndex < 0) {
+        return currentEntries;
       }
 
-      if (currentQueue.some((item) => item.entryId === currentSelectedEntryId)) {
-        return currentQueue;
-      }
-
-      return [...currentQueue, { entryId: currentSelectedEntryId, feedId: currentSelectedFeedId }];
+      const remaining = currentEntries.filter((entry) => entry.id !== currentSelectedEntryId);
+      const nextSelectedEntry = remaining[removedIndex] ?? remaining[removedIndex - 1] ?? null;
+      setSelectedEntryId(nextSelectedEntry?.id ?? null);
+      return remaining;
     });
+
+    setFeeds((currentFeeds) =>
+      currentFeeds.map((feed) => {
+        if (feed.id !== currentSelectedFeedId) {
+          return feed;
+        }
+
+        return {
+          ...feed,
+          unreadCount: Math.max(0, feed.unreadCount - 1),
+        };
+      })
+    );
   }
 
   async function handleSyncReads() {
@@ -298,10 +322,6 @@ export default function HomePage() {
 
     const queueSnapshot = pendingReadQueue;
     const readIds = new Set(queueSnapshot.map((item) => item.entryId));
-    const readCountByFeed = queueSnapshot.reduce<Record<string, number>>((acc, item) => {
-      acc[item.feedId] = (acc[item.feedId] ?? 0) + 1;
-      return acc;
-    }, {});
 
     setIsSyncingReads(true);
     setError(null);
@@ -309,30 +329,7 @@ export default function HomePage() {
     try {
       const entryIds = queueSnapshot.map((item) => item.entryId);
       await markAsRead(entryIds);
-
-      setEntries((current) => {
-        const remaining = current.filter((entry) => !readIds.has(entry.id));
-        if (selectedEntryId && readIds.has(selectedEntryId)) {
-          setSelectedEntryId(remaining[0]?.id ?? null);
-        }
-        return remaining;
-      });
-
-      setFeeds((currentFeeds) =>
-        currentFeeds.map((feed) => {
-          const toSubtract = readCountByFeed[feed.id] ?? 0;
-          if (toSubtract === 0) {
-            return feed;
-          }
-
-          return {
-            ...feed,
-            unreadCount: Math.max(0, feed.unreadCount - toSubtract),
-          };
-        })
-      );
-
-      setPendingReadQueue([]);
+      setPendingReadQueue((currentQueue) => currentQueue.filter((item) => !readIds.has(item.entryId)));
     } catch {
       setError("Unable to sync read articles.");
     } finally {
@@ -343,6 +340,60 @@ export default function HomePage() {
   async function handleSelectFeed(feedId: string) {
     setSelectedFeedId(feedId);
     await loadEntries(feedId, getArticleCountForFeed(feedId));
+  }
+
+  function handleMarkAllVisibleAsRead() {
+    if (isSyncingReads || entries.length === 0) {
+      return;
+    }
+
+    const queueCandidates = entries
+      .map((entry) => {
+        const resolvedFeedId = entry.feedId || (selectedFeedId !== ALL_FEEDS_ID ? selectedFeedId : null);
+        if (!resolvedFeedId || resolvedFeedId === ALL_FEEDS_ID) {
+          return null;
+        }
+
+        return {
+          entryId: entry.id,
+          feedId: resolvedFeedId,
+        };
+      })
+      .filter((item): item is { entryId: string; feedId: string } => item !== null)
+      .filter((item) => !pendingReadIds.has(item.entryId));
+
+    if (queueCandidates.length === 0) {
+      return;
+    }
+
+    const readCountByFeed = queueCandidates.reduce<Record<string, number>>((acc, item) => {
+      acc[item.feedId] = (acc[item.feedId] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    const queuedIds = new Set(queueCandidates.map((item) => item.entryId));
+
+    setPendingReadQueue((currentQueue) => [...currentQueue, ...queueCandidates]);
+    setEntries((currentEntries) => {
+      const remaining = currentEntries.filter((entry) => !queuedIds.has(entry.id));
+      if (selectedEntryId && queuedIds.has(selectedEntryId)) {
+        setSelectedEntryId(remaining[0]?.id ?? null);
+      }
+      return remaining;
+    });
+    setFeeds((currentFeeds) =>
+      currentFeeds.map((feed) => {
+        const toSubtract = readCountByFeed[feed.id] ?? 0;
+        if (toSubtract === 0) {
+          return feed;
+        }
+
+        return {
+          ...feed,
+          unreadCount: Math.max(0, feed.unreadCount - toSubtract),
+        };
+      })
+    );
   }
 
   async function handleArticleCountChange(value: string) {
@@ -744,6 +795,16 @@ export default function HomePage() {
                     </li>
                   ))}
                 </ul>
+                <div className="mt-4 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleMarkAllVisibleAsRead}
+                    disabled={isSyncingReads || entries.length === 0}
+                    className="rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Mark all as read
+                  </button>
+                </div>
               </>
             )}
           </article>
