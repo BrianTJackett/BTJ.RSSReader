@@ -7,3 +7,5 @@ out
 coverage
 *.log
 .vscode/settings.json
+NEXT_STEPS.md
+COMPLETED_TASKS.md
