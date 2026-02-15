@@ -22,10 +22,15 @@ type EmbedCheckResponse = {
 type EmbedStatus = "idle" | "checking" | "embeddable" | "blocked";
 type ArticleCountOption = 10 | 25 | 50 | 100;
 type BackgroundPreset = "sky" | "emerald" | "stone";
+type SortOrder = "newest" | "oldest";
+type ThemeMode = "system" | "light" | "dark";
 
 type UserSettings = {
   backgroundPreset: BackgroundPreset;
   compactMode: boolean;
+  sortOrder: SortOrder;
+  themeMode: ThemeMode;
+  defaultArticleCount: ArticleCountOption;
 };
 
 const ARTICLE_COUNT_OPTIONS: ArticleCountOption[] = [10, 25, 50, 100];
@@ -36,12 +41,15 @@ const ALL_FEEDS_ID = "__all__";
 const DEFAULT_SETTINGS: UserSettings = {
   backgroundPreset: "stone",
   compactMode: false,
+  sortOrder: "newest",
+  themeMode: "system",
+  defaultArticleCount: 10,
 };
 
-const BACKGROUND_PRESET_CLASSES: Record<BackgroundPreset, string> = {
-  sky: "bg-sky-100",
-  emerald: "bg-emerald-100",
-  stone: "bg-stone-100",
+const BACKGROUND_PRESET_CLASSES: Record<BackgroundPreset, { light: string; dark: string }> = {
+  sky: { light: "bg-sky-100", dark: "bg-sky-950" },
+  emerald: { light: "bg-emerald-100", dark: "bg-emerald-950" },
+  stone: { light: "bg-stone-100", dark: "bg-stone-900" },
 };
 
 function formatAgeDays(epochMs: number) {
@@ -72,6 +80,7 @@ export default function HomePage() {
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [entries, setEntries] = useState<FeedlyEntry[]>([]);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [pendingReadQueue, setPendingReadQueue] = useState<Array<{ entryId: string; feedId: string }>>([]);
   const [isSyncingReads, setIsSyncingReads] = useState(false);
@@ -100,25 +109,50 @@ export default function HomePage() {
   const getArticleCountForFeed = useCallback(
     (feedId: string | null): ArticleCountOption => {
       if (!feedId) {
-        return 10;
+        return settings.defaultArticleCount;
       }
 
-      return articleCountByFeed[feedId] ?? 10;
+      return articleCountByFeed[feedId] ?? settings.defaultArticleCount;
     },
-    [articleCountByFeed]
+    [articleCountByFeed, settings.defaultArticleCount]
   );
 
   const selectedFeedArticleCount = useMemo(
     () => getArticleCountForFeed(selectedFeedId),
     [getArticleCountForFeed, selectedFeedId]
   );
+  const sortOrder = settings.sortOrder;
   const isCompactMode = settings.compactMode;
-  const backgroundClassName = BACKGROUND_PRESET_CLASSES[settings.backgroundPreset] ?? BACKGROUND_PRESET_CLASSES.stone;
+  const isDarkMode =
+    settings.themeMode === "dark" || (settings.themeMode === "system" && systemPrefersDark);
+  const selectedBackgroundPreset =
+    BACKGROUND_PRESET_CLASSES[settings.backgroundPreset] ?? BACKGROUND_PRESET_CLASSES.stone;
+  const backgroundClassName = isDarkMode ? selectedBackgroundPreset.dark : selectedBackgroundPreset.light;
+  const primaryTextClass = isDarkMode ? "text-slate-100" : "text-slate-900";
+  const mutedTextClass = isDarkMode ? "text-slate-300" : "text-slate-600";
+  const subtleTextClass = isDarkMode ? "text-slate-400" : "text-slate-500";
+  const panelClass = isDarkMode ? "border-slate-700 bg-slate-800" : "border-slate-200 bg-white";
+  const panelInnerBorderClass = isDarkMode ? "border-slate-700" : "border-slate-100";
+  const rowHoverClass = isDarkMode ? "hover:bg-slate-700" : "hover:bg-slate-50";
+  const rowSelectedClass = isDarkMode ? "bg-slate-700" : "bg-slate-100";
+  const controlClass = isDarkMode
+    ? "rounded border border-slate-600 bg-slate-700 px-2 py-1 text-xs text-slate-100"
+    : "rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700";
 
   const pendingReadIds = useMemo(
     () => new Set(pendingReadQueue.map((item) => item.entryId)),
     [pendingReadQueue]
   );
+
+  const sortedEntries = useMemo(() => {
+    return [...entries].sort((left, right) => {
+      if (sortOrder === "oldest") {
+        return left.ageTimestamp - right.ageTimestamp;
+      }
+
+      return right.ageTimestamp - left.ageTimestamp;
+    });
+  }, [entries, sortOrder]);
 
   const groupedFeeds = useMemo(() => {
     const groups = new Map<string, FeedlyFeed[]>();
@@ -189,17 +223,23 @@ export default function HomePage() {
 
     setIsAuthenticated(true);
     const loadedEntries = payload.entries ?? [];
-    const sortedEntries = [...loadedEntries].sort((left, right) => right.ageTimestamp - left.ageTimestamp);
-    setEntries(sortedEntries);
+    const sortedLoadedEntries = [...loadedEntries].sort((left, right) => {
+      if (sortOrder === "oldest") {
+        return left.ageTimestamp - right.ageTimestamp;
+      }
+
+      return right.ageTimestamp - left.ageTimestamp;
+    });
+    setEntries(loadedEntries);
     setSelectedEntryId((currentSelectedId) => {
-      if (sortedEntries.some((entry) => entry.id === currentSelectedId)) {
+      if (sortedLoadedEntries.some((entry) => entry.id === currentSelectedId)) {
         return currentSelectedId;
       }
 
-      return sortedEntries[0]?.id ?? null;
+      return sortedLoadedEntries[0]?.id ?? null;
     });
     setIsLoadingEntries(false);
-  }, []);
+  }, [sortOrder]);
 
   const loadFeeds = useCallback(async () => {
     setIsLoadingFeeds(true);
@@ -288,31 +328,6 @@ export default function HomePage() {
     }
 
     setPendingReadQueue((currentQueue) => [...currentQueue, { entryId: currentSelectedEntryId, feedId: currentSelectedFeedId }]);
-
-    setEntries((currentEntries) => {
-      const removedIndex = currentEntries.findIndex((entry) => entry.id === currentSelectedEntryId);
-      if (removedIndex < 0) {
-        return currentEntries;
-      }
-
-      const remaining = currentEntries.filter((entry) => entry.id !== currentSelectedEntryId);
-      const nextSelectedEntry = remaining[removedIndex] ?? remaining[removedIndex - 1] ?? null;
-      setSelectedEntryId(nextSelectedEntry?.id ?? null);
-      return remaining;
-    });
-
-    setFeeds((currentFeeds) =>
-      currentFeeds.map((feed) => {
-        if (feed.id !== currentSelectedFeedId) {
-          return feed;
-        }
-
-        return {
-          ...feed,
-          unreadCount: Math.max(0, feed.unreadCount - 1),
-        };
-      })
-    );
   }
 
   async function handleSyncReads() {
@@ -322,6 +337,10 @@ export default function HomePage() {
 
     const queueSnapshot = pendingReadQueue;
     const readIds = new Set(queueSnapshot.map((item) => item.entryId));
+    const readCountByFeed = queueSnapshot.reduce<Record<string, number>>((acc, item) => {
+      acc[item.feedId] = (acc[item.feedId] ?? 0) + 1;
+      return acc;
+    }, {});
 
     setIsSyncingReads(true);
     setError(null);
@@ -329,6 +348,29 @@ export default function HomePage() {
     try {
       const entryIds = queueSnapshot.map((item) => item.entryId);
       await markAsRead(entryIds);
+
+      setEntries((currentEntries) => {
+        const remaining = currentEntries.filter((entry) => !readIds.has(entry.id));
+        if (selectedEntryId && readIds.has(selectedEntryId)) {
+          setSelectedEntryId(remaining[0]?.id ?? null);
+        }
+        return remaining;
+      });
+
+      setFeeds((currentFeeds) =>
+        currentFeeds.map((feed) => {
+          const toSubtract = readCountByFeed[feed.id] ?? 0;
+          if (toSubtract === 0) {
+            return feed;
+          }
+
+          return {
+            ...feed,
+            unreadCount: Math.max(0, feed.unreadCount - toSubtract),
+          };
+        })
+      );
+
       setPendingReadQueue((currentQueue) => currentQueue.filter((item) => !readIds.has(item.entryId)));
     } catch {
       setError("Unable to sync read articles.");
@@ -366,34 +408,7 @@ export default function HomePage() {
       return;
     }
 
-    const readCountByFeed = queueCandidates.reduce<Record<string, number>>((acc, item) => {
-      acc[item.feedId] = (acc[item.feedId] ?? 0) + 1;
-      return acc;
-    }, {});
-
-    const queuedIds = new Set(queueCandidates.map((item) => item.entryId));
-
     setPendingReadQueue((currentQueue) => [...currentQueue, ...queueCandidates]);
-    setEntries((currentEntries) => {
-      const remaining = currentEntries.filter((entry) => !queuedIds.has(entry.id));
-      if (selectedEntryId && queuedIds.has(selectedEntryId)) {
-        setSelectedEntryId(remaining[0]?.id ?? null);
-      }
-      return remaining;
-    });
-    setFeeds((currentFeeds) =>
-      currentFeeds.map((feed) => {
-        const toSubtract = readCountByFeed[feed.id] ?? 0;
-        if (toSubtract === 0) {
-          return feed;
-        }
-
-        return {
-          ...feed,
-          unreadCount: Math.max(0, feed.unreadCount - toSubtract),
-        };
-      })
-    );
   }
 
   async function handleArticleCountChange(value: string) {
@@ -502,11 +517,35 @@ export default function HomePage() {
       setSettings({
         backgroundPreset,
         compactMode: Boolean(parsed.compactMode),
+        sortOrder: parsed.sortOrder === "oldest" ? "oldest" : DEFAULT_SETTINGS.sortOrder,
+        themeMode:
+          parsed.themeMode === "light" || parsed.themeMode === "dark" || parsed.themeMode === "system"
+            ? parsed.themeMode
+            : DEFAULT_SETTINGS.themeMode,
+        defaultArticleCount: ARTICLE_COUNT_OPTIONS.includes(parsed.defaultArticleCount as ArticleCountOption)
+          ? (parsed.defaultArticleCount as ArticleCountOption)
+          : DEFAULT_SETTINGS.defaultArticleCount,
       });
     } catch {
       setSettings(DEFAULT_SETTINGS);
     }
   }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyPreference = () => setSystemPrefersDark(mediaQuery.matches);
+
+    applyPreference();
+    mediaQuery.addEventListener("change", applyPreference);
+
+    return () => {
+      mediaQuery.removeEventListener("change", applyPreference);
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.style.colorScheme = isDarkMode ? "dark" : "light";
+  }, [isDarkMode]);
 
   useEffect(() => {
     window.localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
@@ -523,18 +562,18 @@ export default function HomePage() {
   }, [checkEmbeddable, selectedEntry]);
 
   return (
-    <main className={`min-h-screen px-6 py-8 ${backgroundClassName}`}>
+    <main className={`min-h-screen px-6 py-8 ${backgroundClassName} ${primaryTextClass}`}>
       <div className="mx-auto max-w-[1400px]">
       <header className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">BTJ RSS Reader</h1>
-          <p className="text-sm text-slate-600">Select a feed, open an article, mark as read locally, then sync.</p>
+          <p className={`text-sm ${mutedTextClass}`}>Select a feed, open an article, mark as read locally, then sync.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => void loadFeeds()}
-            className="rounded-md bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-700"
+            className={`rounded-md px-3 py-2 text-sm text-white ${isDarkMode ? "bg-slate-700 hover:bg-slate-600" : "bg-slate-900 hover:bg-slate-700"}`}
           >
             Refresh
           </button>
@@ -550,9 +589,9 @@ export default function HomePage() {
       </header>
 
       {!isAuthenticated ? (
-        <section className="rounded-lg border border-slate-200 bg-white p-6">
+        <section className={`rounded-lg border p-6 ${panelClass}`}>
           <h2 className="mb-2 text-lg font-semibold">Connect Feedly</h2>
-          <p className="mb-4 text-sm text-slate-600">Authorize the app to load your unread entries.</p>
+          <p className={`mb-4 text-sm ${mutedTextClass}`}>Authorize the app to load your unread entries.</p>
           {oauthErrorMessage ? <p className="mb-4 text-sm text-red-600">{oauthErrorMessage}</p> : null}
           <a
             href="/api/feedly/login"
@@ -563,44 +602,44 @@ export default function HomePage() {
         </section>
       ) : (
         <section className="grid min-h-[60vh] grid-cols-1 gap-4 md:grid-cols-[15%_85%]">
-          <aside className="overflow-auto rounded-lg border border-slate-200 bg-white">
-            <div className={`border-b border-slate-100 ${isCompactMode ? "px-4 py-2" : "px-4 py-3"}`}>
-              <h2 className="text-sm font-semibold text-slate-900">Feeds</h2>
+          <aside className={`overflow-auto rounded-lg border ${panelClass}`}>
+            <div className={`border-b ${panelInnerBorderClass} ${isCompactMode ? "px-4 py-2" : "px-4 py-3"}`}>
+              <h2 className={`text-sm font-semibold ${primaryTextClass}`}>Feeds</h2>
             </div>
             {isLoadingFeeds ? (
-              <p className="p-4 text-sm text-slate-500">Loading feeds...</p>
+              <p className={`p-4 text-sm ${subtleTextClass}`}>Loading feeds...</p>
             ) : feeds.length === 0 ? (
-              <p className="p-4 text-sm text-slate-500">No subscriptions found.</p>
+              <p className={`p-4 text-sm ${subtleTextClass}`}>No subscriptions found.</p>
             ) : (
               <div className="pb-2">
-                <section className="border-b border-slate-100">
+                <section className={`border-b ${panelInnerBorderClass}`}>
                   <button
                     type="button"
                     onClick={() => void handleSelectFeed(ALL_FEEDS_ID)}
-                    className={`w-full text-left ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} hover:bg-slate-50 ${
-                      isAllFeedsSelected ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-700"
+                    className={`w-full text-left ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} ${rowHoverClass} ${
+                      isAllFeedsSelected ? `${rowSelectedClass} font-semibold ${primaryTextClass}` : mutedTextClass
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <p className="line-clamp-2">All</p>
-                      <span className="shrink-0 text-[11px] text-slate-500">{allFeedsUnreadCount}</span>
+                      <span className={`shrink-0 text-[11px] ${subtleTextClass}`}>{allFeedsUnreadCount}</span>
                     </div>
                   </button>
                 </section>
                 {groupedFeeds.map((group) => (
-                  <section key={group.groupName} className="border-b border-slate-100 last:border-b-0">
+                  <section key={group.groupName} className={`border-b ${panelInnerBorderClass} last:border-b-0`}>
                     <div className={`flex items-center justify-between ${isCompactMode ? "px-3 py-1.5" : "px-3 py-2"}`}>
                       <button
                         type="button"
                         onClick={() => toggleCategoryCollapse(group.groupName)}
                         className="flex min-w-0 flex-1 items-center gap-2 text-left"
                       >
-                        <span className="shrink-0 text-[11px] text-slate-500">{collapsedCategories[group.groupName] ? "▸" : "▾"}</span>
-                        <h3 className="truncate text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        <span className={`shrink-0 text-[11px] ${subtleTextClass}`}>{collapsedCategories[group.groupName] ? "▸" : "▾"}</span>
+                        <h3 className={`truncate text-[11px] font-semibold uppercase tracking-wide ${subtleTextClass}`}>
                           {group.groupName}
                         </h3>
                       </button>
-                      <span className="shrink-0 text-[11px] text-slate-500">{group.unreadCount}</span>
+                      <span className={`shrink-0 text-[11px] ${subtleTextClass}`}>{group.unreadCount}</span>
                     </div>
                     {!collapsedCategories[group.groupName] ? (
                       <>
@@ -613,13 +652,13 @@ export default function HomePage() {
                               <button
                                 type="button"
                                 onClick={() => void handleSelectFeed(feed.id)}
-                                className={`w-full text-left ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} hover:bg-slate-50 ${
-                                  selectedFeedId === feed.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-700"
+                                className={`w-full text-left ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} ${rowHoverClass} ${
+                                  selectedFeedId === feed.id ? `${rowSelectedClass} font-semibold ${primaryTextClass}` : mutedTextClass
                                 }`}
                               >
                                 <div className="flex items-start justify-between gap-2">
                                   <p className="line-clamp-2">{feed.title}</p>
-                                  <span className="shrink-0 text-[11px] text-slate-500">{feed.unreadCount}</span>
+                                  <span className={`shrink-0 text-[11px] ${subtleTextClass}`}>{feed.unreadCount}</span>
                                 </div>
                               </button>
                             </li>
@@ -639,7 +678,7 @@ export default function HomePage() {
                               <button
                                 type="button"
                                 onClick={() => toggleGroup(group.groupName)}
-                                className={`w-full text-left text-slate-500 hover:bg-slate-50 hover:text-slate-700 ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"}`}
+                                className={`w-full text-left ${subtleTextClass} ${rowHoverClass} ${isDarkMode ? "hover:text-slate-200" : "hover:text-slate-700"} ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"}`}
                               >
                                 {hiddenCount} more feeds
                               </button>
@@ -649,7 +688,7 @@ export default function HomePage() {
                           <button
                             type="button"
                             onClick={() => toggleGroup(group.groupName)}
-                            className={`w-full text-left text-slate-500 hover:bg-slate-50 hover:text-slate-700 ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"}`}
+                            className={`w-full text-left ${subtleTextClass} ${rowHoverClass} ${isDarkMode ? "hover:text-slate-200" : "hover:text-slate-700"} ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"}`}
                           >
                             Show fewer feeds
                           </button>
@@ -662,73 +701,127 @@ export default function HomePage() {
             )}
           </aside>
 
-          <article className={`rounded-lg border border-slate-200 bg-white ${isCompactMode ? "p-3 md:p-4" : "p-4 md:p-6"}`}>
+          <article className={`rounded-lg border ${panelClass} ${isCompactMode ? "p-3 md:p-4" : "p-4 md:p-6"}`}>
             {error ? (
               <p className="text-sm text-red-600">{error}</p>
             ) : !selectedFeedId ? (
-              <p className="text-sm text-slate-500">Select a feed from the left navigation.</p>
+              <p className={`text-sm ${subtleTextClass}`}>Select a feed from the left navigation.</p>
             ) : isLoadingEntries ? (
-              <p className="text-sm text-slate-500">Loading unread articles...</p>
-            ) : entries.length === 0 ? (
+              <p className={`text-sm ${subtleTextClass}`}>Loading unread articles...</p>
+            ) : sortedEntries.length === 0 ? (
               <>
                 <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-lg font-semibold text-slate-900">{selectedFeedTitle}</h2>
-                  <label className="flex items-center gap-2 text-xs text-slate-600">
-                    Articles
-                    <select
-                      value={selectedFeedArticleCount}
-                      onChange={(event) => void handleArticleCountChange(event.target.value)}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
-                    >
-                      {ARTICLE_COUNT_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <h2 className={`text-lg font-semibold ${primaryTextClass}`}>{selectedFeedTitle}</h2>
+                  <div className="flex items-center gap-3">
+                    <label className={`flex items-center gap-2 text-xs ${mutedTextClass}`}>
+                      Sort
+                      <select
+                        value={sortOrder}
+                        onChange={(event) => {
+                          const nextSortOrder = event.target.value as SortOrder;
+                          if (nextSortOrder !== "newest" && nextSortOrder !== "oldest") {
+                            return;
+                          }
+
+                          setSettings((current) => ({
+                            ...current,
+                            sortOrder: nextSortOrder,
+                          }));
+                        }}
+                        className={controlClass}
+                      >
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
+                      </select>
+                    </label>
+                    <label className={`flex items-center gap-2 text-xs ${mutedTextClass}`}>
+                      Articles
+                      <select
+                        value={selectedFeedArticleCount}
+                        onChange={(event) => void handleArticleCountChange(event.target.value)}
+                        className={controlClass}
+                      >
+                        {ARTICLE_COUNT_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                 </div>
-                <p className="mt-3 text-sm text-slate-500">No unread articles in this feed.</p>
+                <p className={`mt-3 text-sm ${subtleTextClass}`}>No unread articles in this feed.</p>
               </>
             ) : (
               <>
                 <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-lg font-semibold text-slate-900">{selectedFeedTitle}</h2>
-                  <label className="flex items-center gap-2 text-xs text-slate-600">
-                    Articles
-                    <select
-                      value={selectedFeedArticleCount}
-                      onChange={(event) => void handleArticleCountChange(event.target.value)}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
-                    >
-                      {ARTICLE_COUNT_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <h2 className={`text-lg font-semibold ${primaryTextClass}`}>{selectedFeedTitle}</h2>
+                  <div className="flex items-center gap-3">
+                    <label className={`flex items-center gap-2 text-xs ${mutedTextClass}`}>
+                      Sort
+                      <select
+                        value={sortOrder}
+                        onChange={(event) => {
+                          const nextSortOrder = event.target.value as SortOrder;
+                          if (nextSortOrder !== "newest" && nextSortOrder !== "oldest") {
+                            return;
+                          }
+
+                          setSettings((current) => ({
+                            ...current,
+                            sortOrder: nextSortOrder,
+                          }));
+                        }}
+                        className={controlClass}
+                      >
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
+                      </select>
+                    </label>
+                    <label className={`flex items-center gap-2 text-xs ${mutedTextClass}`}>
+                      Articles
+                      <select
+                        value={selectedFeedArticleCount}
+                        onChange={(event) => void handleArticleCountChange(event.target.value)}
+                        className={controlClass}
+                      >
+                        {ARTICLE_COUNT_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                 </div>
-                <ul className="mt-4 divide-y divide-slate-100 rounded-md border border-slate-200">
-                  {entries.map((entry) => (
+                <ul className={`mt-4 divide-y rounded-md border ${isDarkMode ? "divide-slate-700 border-slate-700" : "divide-slate-100 border-slate-200"}`}>
+                  {sortedEntries.map((entry) => (
                     <li key={entry.id}>
                       <button
                         type="button"
                         onClick={() => void handleSelectEntry(entry)}
-                        className={`flex w-full items-start justify-between gap-3 text-left hover:bg-slate-50 ${isCompactMode ? "px-3 py-2" : "px-4 py-3"} ${
-                          selectedEntryId === entry.id ? "bg-slate-100" : ""
+                        className={`flex w-full items-start justify-between gap-3 text-left ${rowHoverClass} ${isCompactMode ? "px-3 py-2" : "px-4 py-3"} ${
+                          selectedEntryId === entry.id ? rowSelectedClass : ""
                         }`}
                       >
                         <span
                           className={`text-sm font-medium ${
-                            pendingReadIds.has(entry.id) ? "text-slate-400 line-through" : "text-slate-900"
+                            pendingReadIds.has(entry.id)
+                              ? isDarkMode
+                                ? "text-slate-500 line-through"
+                                : "text-slate-400 line-through"
+                              : primaryTextClass
                           }`}
                         >
                           {entry.title}
                         </span>
                         <span
                           className={`shrink-0 text-xs ${
-                            pendingReadIds.has(entry.id) ? "text-slate-400" : "text-slate-500"
+                            pendingReadIds.has(entry.id)
+                              ? isDarkMode
+                                ? "text-slate-500"
+                                : "text-slate-400"
+                              : subtleTextClass
                           }`}
                         >
                           {formatAgeDays(entry.ageTimestamp)}
@@ -736,13 +829,13 @@ export default function HomePage() {
                       </button>
 
                       {selectedEntryId === entry.id ? (
-                        <section className="border-t border-slate-200 bg-white">
-                          <div className={`flex items-start justify-between gap-4 border-b border-slate-200 ${isCompactMode ? "px-3 py-2" : "px-4 py-3"}`}>
+                        <section className={`border-t ${isDarkMode ? "border-slate-700 bg-slate-800" : "border-slate-200 bg-white"}`}>
+                          <div className={`flex items-start justify-between gap-4 border-b ${isDarkMode ? "border-slate-700" : "border-slate-200"} ${isCompactMode ? "px-3 py-2" : "px-4 py-3"}`}>
                             <div>
-                              <h3 className="text-sm font-semibold text-slate-900">{entry.title}</h3>
-                              <p className="mt-1 text-xs text-slate-500">{entry.source}</p>
+                              <h3 className={`text-sm font-semibold ${primaryTextClass}`}>{entry.title}</h3>
+                              <p className={`mt-1 text-xs ${subtleTextClass}`}>{entry.source}</p>
                             </div>
-                            <label className="flex shrink-0 items-center gap-2 text-xs text-slate-700">
+                            <label className={`flex shrink-0 items-center gap-2 text-xs ${mutedTextClass}`}>
                               <input
                                 key={entry.id}
                                 type="checkbox"
@@ -763,12 +856,12 @@ export default function HomePage() {
                                 className="h-[62vh] w-full"
                               />
                             ) : embedStatus === "checking" ? (
-                              <div className="flex h-[62vh] items-center justify-center px-4 py-3 text-sm text-slate-500">
+                              <div className={`flex h-[62vh] items-center justify-center px-4 py-3 text-sm ${subtleTextClass}`}>
                                 Checking if this article can be displayed in webview...
                               </div>
                             ) : (
                               <div className="max-h-[62vh] overflow-auto px-4 py-3">
-                                <p className="text-sm text-slate-700">
+                                <p className={`text-sm ${mutedTextClass}`}>
                                   {embedBlockReason ?? "This site cannot be embedded in a webview."}
                                 </p>
                                 <a
@@ -779,15 +872,15 @@ export default function HomePage() {
                                 >
                                   Open Original Article
                                 </a>
-                                <div className="mt-4 border-t border-slate-200 pt-3">
-                                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Summary</p>
-                                  <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{entry.summary}</p>
+                                <div className={`mt-4 border-t pt-3 ${isDarkMode ? "border-slate-700" : "border-slate-200"}`}>
+                                  <p className={`mb-2 text-xs font-semibold uppercase tracking-wide ${subtleTextClass}`}>Summary</p>
+                                  <p className={`whitespace-pre-wrap text-sm leading-7 ${mutedTextClass}`}>{entry.summary}</p>
                                 </div>
                               </div>
                             )
                           ) : (
                             <div className="max-h-[62vh] overflow-auto px-4 py-3">
-                              <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{entry.summary}</p>
+                              <p className={`whitespace-pre-wrap text-sm leading-7 ${mutedTextClass}`}>{entry.summary}</p>
                             </div>
                           )}
                         </section>
@@ -799,8 +892,8 @@ export default function HomePage() {
                   <button
                     type="button"
                     onClick={handleMarkAllVisibleAsRead}
-                    disabled={isSyncingReads || entries.length === 0}
-                    className="rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={isSyncingReads || sortedEntries.length === 0}
+                    className={`rounded-md px-3 py-2 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 ${isDarkMode ? "bg-slate-700 hover:bg-slate-600" : "bg-slate-900 hover:bg-slate-700"}`}
                   >
                     Mark all as read
                   </button>
@@ -813,18 +906,47 @@ export default function HomePage() {
 
       <div className="fixed bottom-4 left-4 z-20">
         {isSettingsOpen ? (
-          <section className="w-64 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+          <section className={`w-64 rounded-lg border p-3 shadow-sm ${panelClass}`}>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900">Settings</h2>
+              <h2 className={`text-sm font-semibold ${primaryTextClass}`}>Settings</h2>
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
-                className="text-xs text-slate-500 hover:text-slate-700"
+                className={`text-xs ${subtleTextClass} ${isDarkMode ? "hover:text-slate-200" : "hover:text-slate-700"}`}
               >
                 Close
               </button>
             </div>
-            <label className="mb-3 block text-xs text-slate-700">
+            <label className={`mb-3 block text-xs ${mutedTextClass}`}>
+              Use system theme
+              <input
+                type="checkbox"
+                className="ml-2 h-4 w-4 align-middle"
+                checked={settings.themeMode === "system"}
+                onChange={(event) => {
+                  setSettings((current) => ({
+                    ...current,
+                    themeMode: event.target.checked ? "system" : isDarkMode ? "dark" : "light",
+                  }));
+                }}
+              />
+            </label>
+            <label className={`mb-3 flex items-center gap-2 text-xs ${mutedTextClass}`}>
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={settings.themeMode === "dark"}
+                disabled={settings.themeMode === "system"}
+                onChange={(event) => {
+                  setSettings((current) => ({
+                    ...current,
+                    themeMode: event.target.checked ? "dark" : "light",
+                  }));
+                }}
+              />
+              Dark mode
+            </label>
+            <label className={`mb-3 block text-xs ${mutedTextClass}`}>
               Background
               <select
                 value={settings.backgroundPreset}
@@ -839,14 +961,64 @@ export default function HomePage() {
                     backgroundPreset: nextPreset,
                   }));
                 }}
-                className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                className={`mt-1 w-full ${controlClass}`}
               >
                 <option value="sky">Sky</option>
                 <option value="emerald">Emerald</option>
                 <option value="stone">Stone</option>
               </select>
             </label>
-            <label className="flex items-center gap-2 text-xs text-slate-700">
+            <label className={`mb-3 block text-xs ${mutedTextClass}`}>
+              Default sort
+              <select
+                value={settings.sortOrder}
+                onChange={(event) => {
+                  const nextSortOrder = event.target.value as SortOrder;
+                  if (nextSortOrder !== "newest" && nextSortOrder !== "oldest") {
+                    return;
+                  }
+
+                  setSettings((current) => ({
+                    ...current,
+                    sortOrder: nextSortOrder,
+                  }));
+                }}
+                className={`mt-1 w-full ${controlClass}`}
+              >
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </select>
+            </label>
+            <label className={`mb-3 block text-xs ${mutedTextClass}`}>
+              Default articles
+              <select
+                value={settings.defaultArticleCount}
+                onChange={(event) => {
+                  const parsed = Number(event.target.value);
+                  if (!ARTICLE_COUNT_OPTIONS.includes(parsed as ArticleCountOption)) {
+                    return;
+                  }
+
+                  const nextCount = parsed as ArticleCountOption;
+                  setSettings((current) => ({
+                    ...current,
+                    defaultArticleCount: nextCount,
+                  }));
+
+                  if (selectedFeedId && !(selectedFeedId in articleCountByFeed)) {
+                    void loadEntries(selectedFeedId, nextCount);
+                  }
+                }}
+                className={`mt-1 w-full ${controlClass}`}
+              >
+                {ARTICLE_COUNT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={`flex items-center gap-2 text-xs ${mutedTextClass}`}>
               <input
                 type="checkbox"
                 className="h-4 w-4"
@@ -865,7 +1037,7 @@ export default function HomePage() {
           <button
             type="button"
             onClick={() => setIsSettingsOpen(true)}
-            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            className={`rounded-md border px-3 py-2 text-xs font-medium ${isDarkMode ? "border-slate-600 bg-slate-700 text-slate-100 hover:bg-slate-600" : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
           >
             Settings
           </button>
