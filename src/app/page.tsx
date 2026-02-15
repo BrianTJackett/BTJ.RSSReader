@@ -21,10 +21,28 @@ type EmbedCheckResponse = {
 
 type EmbedStatus = "idle" | "checking" | "embeddable" | "blocked";
 type ArticleCountOption = 10 | 25 | 50 | 100;
+type BackgroundPreset = "sky" | "emerald" | "stone";
+
+type UserSettings = {
+  backgroundPreset: BackgroundPreset;
+  compactMode: boolean;
+};
 
 const ARTICLE_COUNT_OPTIONS: ArticleCountOption[] = [10, 25, 50, 100];
 const ARTICLE_COUNT_STORAGE_KEY = "btj-rssreader-article-count-by-feed";
+const USER_SETTINGS_STORAGE_KEY = "btj-rssreader-settings";
 const ALL_FEEDS_ID = "__all__";
+
+const DEFAULT_SETTINGS: UserSettings = {
+  backgroundPreset: "stone",
+  compactMode: false,
+};
+
+const BACKGROUND_PRESET_CLASSES: Record<BackgroundPreset, string> = {
+  sky: "bg-sky-100",
+  emerald: "bg-emerald-100",
+  stone: "bg-stone-100",
+};
 
 function formatAgeDays(epochMs: number) {
   const normalizedEpochMs = epochMs < 1_000_000_000_000 ? epochMs * 1000 : epochMs;
@@ -48,6 +66,8 @@ function formatAgeDays(epochMs: number) {
 export default function HomePage() {
   const [feeds, setFeeds] = useState<FeedlyFeed[]>([]);
   const [articleCountByFeed, setArticleCountByFeed] = useState<Record<string, ArticleCountOption>>({});
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedFeedId, setSelectedFeedId] = useState<string | null>(null);
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -92,6 +112,8 @@ export default function HomePage() {
     () => getArticleCountForFeed(selectedFeedId),
     [getArticleCountForFeed, selectedFeedId]
   );
+  const isCompactMode = settings.compactMode;
+  const backgroundClassName = BACKGROUND_PRESET_CLASSES[settings.backgroundPreset] ?? BACKGROUND_PRESET_CLASSES.stone;
 
   const pendingReadIds = useMemo(
     () => new Set(pendingReadQueue.map((item) => item.entryId)),
@@ -414,6 +436,32 @@ export default function HomePage() {
   }, [articleCountByFeed]);
 
   useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(USER_SETTINGS_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as Partial<UserSettings>;
+      const backgroundPreset =
+        parsed.backgroundPreset && parsed.backgroundPreset in BACKGROUND_PRESET_CLASSES
+          ? parsed.backgroundPreset
+          : DEFAULT_SETTINGS.backgroundPreset;
+
+      setSettings({
+        backgroundPreset,
+        compactMode: Boolean(parsed.compactMode),
+      });
+    } catch {
+      setSettings(DEFAULT_SETTINGS);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }, [settings]);
+
+  useEffect(() => {
     if (!selectedEntry?.url) {
       setEmbedStatus("idle");
       setEmbedBlockReason(null);
@@ -424,7 +472,8 @@ export default function HomePage() {
   }, [checkEmbeddable, selectedEntry]);
 
   return (
-    <main className="mx-auto max-w-[1400px] px-6 py-8">
+    <main className={`min-h-screen px-6 py-8 ${backgroundClassName}`}>
+      <div className="mx-auto max-w-[1400px]">
       <header className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">BTJ RSS Reader</h1>
@@ -464,7 +513,7 @@ export default function HomePage() {
       ) : (
         <section className="grid min-h-[60vh] grid-cols-1 gap-4 md:grid-cols-[15%_85%]">
           <aside className="overflow-auto rounded-lg border border-slate-200 bg-white">
-            <div className="border-b border-slate-100 px-4 py-3">
+            <div className={`border-b border-slate-100 ${isCompactMode ? "px-4 py-2" : "px-4 py-3"}`}>
               <h2 className="text-sm font-semibold text-slate-900">Feeds</h2>
             </div>
             {isLoadingFeeds ? (
@@ -477,7 +526,7 @@ export default function HomePage() {
                   <button
                     type="button"
                     onClick={() => void handleSelectFeed(ALL_FEEDS_ID)}
-                    className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${
+                    className={`w-full text-left ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} hover:bg-slate-50 ${
                       isAllFeedsSelected ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-700"
                     }`}
                   >
@@ -489,7 +538,7 @@ export default function HomePage() {
                 </section>
                 {groupedFeeds.map((group) => (
                   <section key={group.groupName} className="border-b border-slate-100 last:border-b-0">
-                    <div className="flex items-center justify-between px-3 py-2">
+                    <div className={`flex items-center justify-between ${isCompactMode ? "px-3 py-1.5" : "px-3 py-2"}`}>
                       <button
                         type="button"
                         onClick={() => toggleCategoryCollapse(group.groupName)}
@@ -513,7 +562,7 @@ export default function HomePage() {
                               <button
                                 type="button"
                                 onClick={() => void handleSelectFeed(feed.id)}
-                                className={`w-full px-3 py-2 text-left text-xs hover:bg-slate-50 ${
+                                className={`w-full text-left ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} hover:bg-slate-50 ${
                                   selectedFeedId === feed.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-700"
                                 }`}
                               >
@@ -539,7 +588,7 @@ export default function HomePage() {
                               <button
                                 type="button"
                                 onClick={() => toggleGroup(group.groupName)}
-                                className="w-full px-3 py-2 text-left text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                                className={`w-full text-left text-slate-500 hover:bg-slate-50 hover:text-slate-700 ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"}`}
                               >
                                 {hiddenCount} more feeds
                               </button>
@@ -549,7 +598,7 @@ export default function HomePage() {
                           <button
                             type="button"
                             onClick={() => toggleGroup(group.groupName)}
-                            className="w-full px-3 py-2 text-left text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                            className={`w-full text-left text-slate-500 hover:bg-slate-50 hover:text-slate-700 ${isCompactMode ? "px-3 py-1.5 text-[11px]" : "px-3 py-2 text-xs"}`}
                           >
                             Show fewer feeds
                           </button>
@@ -562,7 +611,7 @@ export default function HomePage() {
             )}
           </aside>
 
-          <article className="rounded-lg border border-slate-200 bg-white p-4 md:p-6">
+          <article className={`rounded-lg border border-slate-200 bg-white ${isCompactMode ? "p-3 md:p-4" : "p-4 md:p-6"}`}>
             {error ? (
               <p className="text-sm text-red-600">{error}</p>
             ) : !selectedFeedId ? (
@@ -615,7 +664,7 @@ export default function HomePage() {
                       <button
                         type="button"
                         onClick={() => void handleSelectEntry(entry)}
-                        className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50 ${
+                        className={`flex w-full items-start justify-between gap-3 text-left hover:bg-slate-50 ${isCompactMode ? "px-3 py-2" : "px-4 py-3"} ${
                           selectedEntryId === entry.id ? "bg-slate-100" : ""
                         }`}
                       >
@@ -637,7 +686,7 @@ export default function HomePage() {
 
                       {selectedEntryId === entry.id ? (
                         <section className="border-t border-slate-200 bg-white">
-                          <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3">
+                          <div className={`flex items-start justify-between gap-4 border-b border-slate-200 ${isCompactMode ? "px-3 py-2" : "px-4 py-3"}`}>
                             <div>
                               <h3 className="text-sm font-semibold text-slate-900">{entry.title}</h3>
                               <p className="mt-1 text-xs text-slate-500">{entry.source}</p>
@@ -700,6 +749,68 @@ export default function HomePage() {
           </article>
         </section>
       )}
+
+      <div className="fixed bottom-4 left-4 z-20">
+        {isSettingsOpen ? (
+          <section className="w-64 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-900">Settings</h2>
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+                className="text-xs text-slate-500 hover:text-slate-700"
+              >
+                Close
+              </button>
+            </div>
+            <label className="mb-3 block text-xs text-slate-700">
+              Background
+              <select
+                value={settings.backgroundPreset}
+                onChange={(event) => {
+                  const nextPreset = event.target.value as BackgroundPreset;
+                  if (!(nextPreset in BACKGROUND_PRESET_CLASSES)) {
+                    return;
+                  }
+
+                  setSettings((current) => ({
+                    ...current,
+                    backgroundPreset: nextPreset,
+                  }));
+                }}
+                className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+              >
+                <option value="sky">Sky</option>
+                <option value="emerald">Emerald</option>
+                <option value="stone">Stone</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={settings.compactMode}
+                onChange={(event) => {
+                  setSettings((current) => ({
+                    ...current,
+                    compactMode: event.target.checked,
+                  }));
+                }}
+              />
+              Compact mode
+            </label>
+          </section>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setIsSettingsOpen(true)}
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Settings
+          </button>
+        )}
+      </div>
+      </div>
     </main>
   );
 }

@@ -6,3 +6,7 @@ out
 .env.*.local
 coverage
 *.log
+.vscode/settings.json
+NEXT_STEPS.md
+COMPLETED_TASKS.md
+CHECKIN_NOTE.md
