@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FeedlyEntry, FeedlyFeed } from "@/types/feedly";
 import {
   useUserSettings,
@@ -58,6 +58,8 @@ export default function HomePage() {
   const [feeds, setFeeds] = useState<FeedlyFeed[]>([]);
   const [articleCountByFeed, setArticleCountByFeed] = useState<Record<string, ArticleCountOption>>({});
   const { settings, setSettings, isDarkMode } = useUserSettings();
+  const articleCountByFeedRef = useRef<Record<string, ArticleCountOption>>({});
+  const defaultArticleCountRef = useRef<ArticleCountOption>(settings.defaultArticleCount);
   const [selectedFeedId, setSelectedFeedId] = useState<string | null>(null);
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -95,6 +97,14 @@ export default function HomePage() {
     },
     [articleCountByFeed, settings.defaultArticleCount]
   );
+
+  const getLatestArticleCountForFeed = useCallback((feedId: string | null): ArticleCountOption => {
+    if (!feedId) {
+      return defaultArticleCountRef.current;
+    }
+
+    return articleCountByFeedRef.current[feedId] ?? defaultArticleCountRef.current;
+  }, []);
 
   const selectedFeedArticleCount = useMemo(
     () => getArticleCountForFeed(selectedFeedId),
@@ -235,14 +245,14 @@ export default function HomePage() {
     setSelectedFeedId(nextFeedId);
 
     if (nextFeedId) {
-      await loadEntries(nextFeedId, getArticleCountForFeed(nextFeedId));
+      await loadEntries(nextFeedId, getLatestArticleCountForFeed(nextFeedId));
     } else {
       setEntries([]);
       setSelectedEntryId(null);
     }
 
     setIsLoadingFeeds(false);
-  }, [getArticleCountForFeed, loadEntries, selectedFeedId]);
+  }, [getLatestArticleCountForFeed, loadEntries, selectedFeedId]);
 
   function handleSelectEntry(entry: FeedlyEntry) {
     setSelectedEntryId(entry.id);
@@ -250,7 +260,7 @@ export default function HomePage() {
 
   async function handleSelectFeed(feedId: string) {
     setSelectedFeedId(feedId);
-    await loadEntries(feedId, getArticleCountForFeed(feedId));
+    await loadEntries(feedId, getLatestArticleCountForFeed(feedId));
   }
 
 
@@ -265,15 +275,18 @@ export default function HomePage() {
     }
 
     const count = parsed as ArticleCountOption;
-    setArticleCountByFeed((current) => ({
-      ...current,
+    const nextArticleCountByFeed = {
+      ...articleCountByFeedRef.current,
       [selectedFeedId]: count,
-    }));
+    };
+    articleCountByFeedRef.current = nextArticleCountByFeed;
+    setArticleCountByFeed(nextArticleCountByFeed);
 
     await loadEntries(selectedFeedId, count);
   }
 
   function handleDefaultArticleCountChange(nextCount: ArticleCountOption) {
+    defaultArticleCountRef.current = nextCount;
     if (selectedFeedId && !(selectedFeedId in articleCountByFeed)) {
       void loadEntries(selectedFeedId, nextCount);
     }
@@ -347,11 +360,21 @@ export default function HomePage() {
           .map(([key, value]) => [key, value as ArticleCountOption])
       ) as Record<string, ArticleCountOption>;
 
+      articleCountByFeedRef.current = normalized;
       setArticleCountByFeed(normalized);
     } catch {
+      articleCountByFeedRef.current = {};
       setArticleCountByFeed({});
     }
   }, []);
+
+  useEffect(() => {
+    articleCountByFeedRef.current = articleCountByFeed;
+  }, [articleCountByFeed]);
+
+  useEffect(() => {
+    defaultArticleCountRef.current = settings.defaultArticleCount;
+  }, [settings.defaultArticleCount]);
 
   useEffect(() => {
     window.localStorage.setItem(ARTICLE_COUNT_STORAGE_KEY, JSON.stringify(articleCountByFeed));
