@@ -86,9 +86,31 @@ A Next.js + TypeScript + Tailwind RSS reader for Feedly with categorized feed na
 - `GET /api/feedly/callback` - handle OAuth callback
 - `GET /api/feedly/embed-check` - evaluate iframe eligibility for article URL
 
+## Testing
+
+- Unit/component tests are powered by `Vitest` + `React Testing Library` (jsdom).
+- E2E smoke tests are powered by `Playwright`.
+- Test scaffolding includes `MSW` helpers for future API-mocked test expansion.
+
+### Run Tests
+
+- `npm test` - run unit/component suite
+- `npm run test:unit` - run unit/component suite once
+- `npm run test:unit:watch` - run unit/component suite in watch mode
+- `npm run test:coverage` - run unit/component suite with coverage
+- `npm run test:e2e` - run Playwright end-to-end tests
+- `npm run test:e2e:ui` - open Playwright interactive UI
+
+### E2E Prerequisite
+
+- Install Playwright browsers once after dependency install:
+  - `npx playwright install`
+
 ## Available Scripts
 
 - `npm run dev` - start development server
 - `npm run build` - production build
 - `npm run start` - run production server
 - `npm run lint` - run ESLint
+- `npm run test` - run unit/component tests
+- `npm run test:e2e` - run Playwright end-to-end tests
